@@ -34,8 +34,9 @@ define('SMARTPHONE_WINDOW_PHONE_8', 'WPN8');
 class CI_Smartphone {
     const ANDROID_API_KEY = 'AIzaSyA-t2mzPMEdLza8nqYn5vbkcH7XV5NmfYo';
     const ANDROID_SERVER_URL = 'https://android.googleapis.com/gcm/send';
-    const APPLE_SOCKET_URL = 'ssl://gateway.sandbox.push.apple.com:2195';
-    const APPLE_PASSWORD_PHRASE = 'KDPass@123';
+//    const APPLE_SOCKET_URL = 'ssl://gateway.sandbox.push.apple.com:2195';
+    const APPLE_SOCKET_URL = 'ssl://gateway.push.apple.com:2195';
+    const APPLE_PASSWORD_PHRASE = 'Auth123';//KDPass@123
     const WP_SECRET_KEY = '';
 
     protected $CI;
@@ -48,7 +49,8 @@ class CI_Smartphone {
      */
     public function __construct() {
         $this->CI = & get_instance();
-
+        $this->CI->load->database();
+        
         log_message('debug', "CI_Smartphone Initialized");
     }
     
@@ -116,13 +118,34 @@ class CI_Smartphone {
 
         $response = curl_exec($ch);
         curl_close($ch);
+        
+        $user_id = $this->getUserIdByToken(base64_encode($registrationId));
+        if ($user_id) {
+            $info = $this->getSchedulerInfo($user_id);
+            
+            $json['requesttype'] = $info->requesttype;
+            $json['requestdescription'] = $info->info;
+            $data = array();
+            $data['ip'] = (isset($info->ip)?$info->ip:'');
+            $data['location'] = (isset($info->location)?$info->location:'');
+            $data['time'] = $info->time;
+            //$data['date'] = (isset($info->date)?$info->date:'');
+            //$data['time'] = (isset($info->time)?$info->time:'');
 
-        echo $response;
+            $json['data'] = $data;
+            $json['andorid_response'] = $response;
+            echo json_encode($json);
+            
+        } else {
+            echo $response;
+        }
      }
 
     private function sendAppleNotification($registrationId, $pushType, $message) {
       $cert_path = realpath(APPPATH.'../cert').DIRECTORY_SEPARATOR; 
-      $cert_path .= 'push_dev_all.pem';
+//      $cert_path .= 'push_dev_all.pem';
+      $cert_path .= 'production_apns.pem';
+//      $cert_path .= 'push_dev_all.p12';
       if(file_exists($cert_path) && is_file($cert_path) && is_readable($cert_path)) {
         $ctx = stream_context_create();
         stream_context_set_option($ctx, 'ssl', 'local_cert', $cert_path);
@@ -161,7 +184,23 @@ class CI_Smartphone {
        if (!$result) {
           $res['error'] = 'Message not delivered.'; 
        } else {
-          $res['success'] = 'Message successfully delivered.'; 
+          //$res['success'] = 'Message successfully delivered.'; 
+        $user_id = $this->getUserIdByToken(base64_encode($registrationId));
+        if ($user_id) {
+            $info = $this->getSchedulerInfo($user_id);
+            
+            $res['requesttype'] = $info->requesttype;
+            $res['requestdescription'] = $info->info;
+            $data = array();
+            $data['ip'] = (isset($info->ip)?$info->ip:'');
+            $data['location'] = (isset($info->location)?$info->location:'');
+            $data['time'] = $info->time;
+            $data['success'] = 'Message successfully delivered.';
+            //$data['date'] = (isset($info->date)?$info->date:'');
+            //$data['time'] = (isset($info->time)?$info->time:'');
+
+            $res['data'] = $data;
+      }           
        }
        echo json_encode($res);
        return ;
@@ -170,10 +209,59 @@ class CI_Smartphone {
     }
 
     private function sendWindowPhone_7_Notification($registrationId, $pushType, $message) {
+        include(APPPATH.'third_party/wp_notification/WindowsPhonePushNotification.php');
+        try {
+            $uri = $registrationId;
+
+            $notifier = new WindowsPhonePushNotification();
+            $result = $notifier->pushToast($uri, $pushType, $message);
+
+            $user_id = $this->getUserIdByToken(base64_encode($registrationId));
+            if ($user_id) {
+                $info = $this->getSchedulerInfo($user_id);
+
+                $json['requesttype'] = $info->requesttype;
+                $json['requestdescription'] = $info->info;
+                $data = array();
+                $data['ip'] = (isset($info->ip)?$info->ip:'');
+                $data['location'] = (isset($info->location)?$info->location:'');
+                $data['time'] = $info->time;
+                //$data['date'] = (isset($info->date)?$info->date:'');
+                //$data['time'] = (isset($info->time)?$info->time:'');
+
+                $json['data'] = $data;
+                $json['wpn_response'] = $result;
+                echo json_encode($json);
+
+            } else {
+               echo json_encode($result); 
+            }
+            
+        } catch (Exception $e) {
+            //var_dump($e);
+             print "<pre>"; print_r($e); print "</pre>";
+        }        
+
+        /*
         include(APPPATH.'third_party/wp_notification/app.php');
         $client = new WindowsPhonePushClient7($registrationId);
         $result = $client->send_raw_update($message);
+        
         echo $result;
+        */
+        /*
+         * 
+        include(APPPATH.'third_party/wp_notification/windowsphone.php');
+        $client = new WindowsPhonePushNotification($registrationId);
+        $target = $message_id = NULL;
+        $user_id = $this->getUserIdByToken(base64_encode($registrationId));
+        if ($user_id) {
+            $info = $this->getSchedulerInfo($user_id);
+        }
+        $message = (isset($info->info)?$info->info:'Empty message!');
+        $result = $client->push($target, $message_id, $message, $registrationId);
+        print "<pre>"; print_r($result); print "</pre>";
+        */
         
 /*
 $xml = simplexml_load_string($xml_string);
@@ -227,5 +315,80 @@ class XmlToJson {
     public function getDeviceTypes() {
       return array(SMARTPHONE_ANDROID, SMARTPHONE_APPLE, SMARTPHONE_WINDOW_PHONE_7, SMARTPHONE_WINDOW_PHONE_8);  
     }
+    
+    private function getSchedulerInfo($user_id) {
+        try {
+            $this->CI->db->select('u.login_name, u.fname, u.lname, s.command, s.requesttype, s.info, s.start_time');
+            $this->CI->db->from('e_users as u');
+            $this->CI->db->join('e_scheduler as s', 's.user_id = u.id', 'LEFT');
+            $this->CI->db->where('u.id', $user_id);
+            $this->CI->db->limit(1);
+
+            $query = $this->CI->db->get();
+            $result = $query->row();
+            if (empty($result->requesttype)) {
+             $result->requesttype = 'none';   
+            }
+            if (empty($result->info)) {
+              $result->info = '';  
+            }
+            
+            $this->CI->db->select('*');
+            $this->CI->db->from('e_users_ip');
+            $this->CI->db->where('user_id', $user_id);
+            $this->CI->db->order_by('id', 'DESC');
+            $this->CI->db->limit(1);
+            $query = $this->CI->db->get();
+            if(isset($query->row()->id)) {
+              $result->ip = $query->row()->ip;  
+              $result->location = $query->row()->location;
+              /*
+              $result->date = $query->row()->date;  
+              $result->time = $query->row()->time;  
+              */
+              if ($result->requesttype != 'none') {
+                 $result->time = $query->row()->date.' '.$query->row()->time.':00';   
+              } else {
+                 $result->time = date('Y-m-d H:i:s'); 
+              }
+              
+            }
+            
+            
+            if(!isset($result->ip)) {
+                $result->ip = '';  
+            }
+            if(!isset($result->location)) {
+                $result->location = '';  
+            }
+            if(!isset($result->time)) {
+                $result->time = date('Y-m-d H:i:s');  
+            }
+            
+            return $result;
+        }
+        catch(Exception $e){
+           log_message('error',$e->getMessage().' in '.$e->getFile() .':'.$e->getLine());
+           return FALSE;
+        }                 
+        
+    }
+
+    private function getUserIdByToken($device_token) {
+        try {
+            $this->CI->db->select('user_id');
+            $this->CI->db->from('e_devices');
+            $this->CI->db->where('device_token', $device_token);
+            $this->CI->db->limit(1);
+
+            $query = $this->CI->db->get();
+            return (isset($query->row()->user_id)?$query->row()->user_id:false);
+        }
+        catch(Exception $e){
+           log_message('error',$e->getMessage().' in '.$e->getFile() .':'.$e->getLine());
+           return FALSE;
+        }                 
+    }
+    
 
 }
